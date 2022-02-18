@@ -12,11 +12,7 @@ const channels = [
   { name: "sic-bo", password: "test" },
 ];
 
-let activeChannels = [];
-
-app.get('/', (req, res) => {
-  res.send('Hello World')
-})
+let activeChannels = new Set([]);
 
 const server = app.listen(PORT, () => {
   console.log(`Server starts listening at Port ${PORT}`);
@@ -24,13 +20,21 @@ const server = app.listen(PORT, () => {
 
 const io = socket(server, {
   cors: {
-    origin: "*",
+    origin: "*",    
     methods: ["GET", "POST"],
   },
 });
 
+app.get("/active-channels", (req, res) => {
+  const result = Array.from(activeChannels).map((item) => ({
+    name: item.charAt(0).toUpperCase() + item.slice(1),
+    value: item,
+  }));
+  res.json(result);
+});
+
 io.on("connection", (socket) => {
-  // console.log("Web socket connected", socket.id);
+  console.log("Web socket connected", socket.id);
 
   // logic to create room for broadcaster
   socket.on("create_room", ({ roomName, password }) => {
@@ -41,25 +45,26 @@ io.on("connection", (socket) => {
       channels.find((channel) => channel.name === roomName)?.password ===
       password;
 
-    if (roomAlreadyExist === undefined && validCredentials) {
-      socket.join(roomName);
-      activeChannels.push(roomName);
-      // socket.emit("active_channels", activeChannels);
-      socket.emit("room_created", roomName);
-      socket.emit("total_users_in_room", {
-        roomName,
-        totalActiveUsers: io.sockets.adapter.rooms.get(roomName).size,
-      });
-      console.log(
-        "Room Name: ",
-        roomName,
-        "| All Users : ",
-        io.sockets.adapter.rooms.get(roomName)
-      );
+    if (validCredentials) {
+      if (roomAlreadyExist) {
+        socket.emit("broadcast_conflict");
+      } else {
+        socket.join(roomName);
+        activeChannels.add(roomName);
+        socket.emit("room_created", roomName);
+        socket.emit("total_users_in_room", {
+          roomName,
+          totalActiveUsers: io.sockets.adapter.rooms.get(roomName)?.size || 0,
+        });
+        console.log(
+          "Room Name: ",
+          roomName,
+          "| All Users : ",
+          io.sockets.adapter.rooms.get(roomName)
+        );
+      }
     } else {
-      console.log(
-        "<==== ERROR: Broadcast conflict or password not match ====>"
-      );
+      socket.emit("wrong_password");
     }
   });
 
@@ -67,6 +72,7 @@ io.on("connection", (socket) => {
   socket.on("join_room", (roomName) => {
     // console.log(roomName)
     const rooms = io.sockets.adapter.rooms;
+    console.log(rooms);
     const roomAlreadyExist = rooms.get(roomName);
     // console.log("Rooms for joining viewer ==> ", rooms, roomAlreadyExist);
     if (roomAlreadyExist) {
@@ -75,7 +81,7 @@ io.on("connection", (socket) => {
       socket.emit("room_joined", roomName);
       socket.broadcast.to(roomName).emit("total_users_in_room", {
         roomName,
-        totalActiveUsers: io.sockets.adapter.rooms.get(roomName).size,
+        totalActiveUsers: io.sockets.adapter.rooms.get(roomName)?.size || 0,
       });
       console.log(
         "Room Name: ",
@@ -84,7 +90,8 @@ io.on("connection", (socket) => {
         rooms.get(roomName)
       );
     } else {
-      console.log("<==== ERROR: Room not exist  ====>");
+      socket.emit("room_not_exist", roomName);
+      console.log("<==== ERROR: Room not exist  ====>", roomName);
     }
   });
 
@@ -109,5 +116,43 @@ io.on("connection", (socket) => {
   socket.on("answer", (answer, roomName) => {
     // console.log(answer)
     socket.broadcast.to(roomName).emit("answer", answer, socket.id);
+  });
+
+  socket.on("disconnect_call", (roomName, isBrodcaster) => {
+    if (!isBrodcaster) {
+      console.log("Connection disconnect============", roomName, socket.id);
+      socket.to(roomName).emit("disconnectViewer", socket.id);
+      socket.leave(roomName);
+
+      setTimeout(() => {
+        console.log(
+          "Room Left: ",
+          roomName,
+          "| All Users : ",
+          io.sockets.adapter.rooms.get(roomName)
+        );
+        socket.broadcast.to(roomName).emit("total_users_in_room", {
+          roomName,
+          totalActiveUsers: io.sockets.adapter.rooms.get(roomName)?.size || 0,
+        });
+      }, 300);
+    } else {
+      console.log(
+        "Connection disconnect Brodcaster============",
+        roomName,
+        socket.id
+      );
+      socket.to(roomName).emit("disconnectBrodcaster");
+      activeChannels.delete(roomName);
+      io.socketsLeave(roomName);
+      setTimeout(() => {
+        console.log(
+          "Room Left: ",
+          roomName,
+          "| All Users : ",
+          io.sockets.adapter.rooms.get(roomName)
+        );
+      }, 300);
+    }
   });
 });
